@@ -1,0 +1,49 @@
+# Xcode
+*.DS_Store
+*/build/*
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata
+*.moved-aside
+DerivedData
+.idea/
+*.hmap
+build/
+
+*.xcuserstate
+*.xcbkptlist
+*.xcworkspace
+
+# Carthage
+Carthage/
+
+# cocoapods
+Pods/
+Podfile.lock
+
+# node_module
+package-lock.json
+node_modules/
+
+# ipa
+ipa
+*.ipa
+*.dSYM
+*.zip
+fastlane/*.xml
+.autobuild/
+
+
+#python
+*.pyc
+*/__pychache__
+IgnoreModule
+
+# shell
+shell/localizator/token.json
