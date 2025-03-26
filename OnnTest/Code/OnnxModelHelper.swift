@@ -27,9 +27,9 @@ class OnnxModelHelper {
     }
     
     func generate(data:[[[Float]]]) -> [Float]? {
-        let data = self.floatArrayToNSMutableData(data);
+        let swiftData = self.floatArrayToNSMutableData(data);
         var error: NSError? = nil
-        guard let inputValue = Self.createOrtValueForFloat(data, error: &error) else {
+        guard let inputValue = Self.createOrtValueForFloat(swiftData, error: &error) else {
             return nil
         }
         
@@ -48,15 +48,22 @@ class OnnxModelHelper {
         let outputData = try? output.tensorData() as Data
         
         // Convert Data to [Float]
-        var floatArray: [Float]?
-
-        outputData?.withUnsafeBytes { (pointer: UnsafeRawBufferPointer) in
-            let floatPointer = pointer.bindMemory(to: Float.self)
-            floatArray = Array(floatPointer)
-        }
+        var floatArray: [Float]? =  self.dataToFloatArrayCopy(outputData ?? Data())
         
         return floatArray
     }
+    
+    func dataToFloatArrayCopy(_ data: Data) -> [Float] {
+//        let floatArrayTest: [Float] = [1.5, 1.5, 1.5]
+//        let data = Data(buffer: UnsafeBufferPointer(start: floatArrayTest, count: floatArrayTest.count))
+        let floatCount = data.count / MemoryLayout<Float>.size
+        let floatArray = data.withUnsafeBytes {
+            Array($0.bindMemory(to: Float.self))[0..<floatCount]
+        }
+        let result = Array(floatArray)
+        return result
+    }
+
     
     fileprivate func floatArrayToNSMutableData(_ floatArray: [[[Float]]]) -> NSMutableData {
         let mutableData = NSMutableData()

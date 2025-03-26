@@ -6,6 +6,7 @@
 //
 
 import Accelerate
+import NumiOS
 
 struct OnnxFBankProcessor {
     let melBasis: [[Float]]
@@ -22,21 +23,31 @@ struct OnnxFBankProcessor {
         
         // 1. **创建滑动窗口输入 (strided_input)**
         var stridedInput: [[Float]] = strideInput(waveform, windowSize: windowSize, windowShift: windowShift)
+        self.log_____(data: stridedInput)
 
         // 2. **去均值**
         meanNormalize(&stridedInput)
+        
+        self.log_____(data: stridedInput)
 
         // 3. **Pre-emphasis 预加重**
-        preemphasis(&stridedInput)
+        stridedInput = preEmphasize(matrix: stridedInput, coefficient: preemphasisCoefficient)
+        self.log_____(data: stridedInput)
 
         // 4. **乘窗函数**
         applyWindow(&stridedInput, window: window)
+        
+        self.log_____(data: stridedInput)
 
         // 5. **填充**
         padInput(&stridedInput, targetSize: paddedWindowSize)
+        
+        self.log_____(data: stridedInput)
 
         // 6. **FFT 幅值谱**
-        var spectrum = computeMagnitudeFFT(stridedInput, paddedWindowSize: paddedWindowSize)
+        var spectrum = performFFT(on: stridedInput)
+        
+        self.log_____(data: spectrum)
 
         // 7. **功率谱**
         if usePower {
@@ -71,19 +82,29 @@ struct OnnxFBankProcessor {
             let mean = vDSP.mean(matrix[i]) // 计算均值
 
             matrix[i].withUnsafeMutableBufferPointer { buffer in
-                var mean = mean // 需要可变变量
+                var mean = 0-mean // 需要可变变量
                 vDSP_vsadd(buffer.baseAddress!, 1, &mean, buffer.baseAddress!, 1, vDSP_Length(buffer.count))
             }
         }
     }
 
     /// 预加重
-    private func preemphasis(_ matrix: inout [[Float]]) {
-        for i in 0..<matrix.count {
-            for j in stride(from: matrix[i].count - 1, to: 0, by: -1) {
-                matrix[i][j] -= preemphasisCoefficient * matrix[i][j - 1]
+    func preEmphasize(matrix: [[Float]], coefficient: Float) -> [[Float]] {
+        let rows = matrix.count
+        let cols = matrix[0].count
+        var result = matrix
+
+        for i in 0..<rows {
+            // **填充第一列**（复制第一列的值）
+            var paddedRow = [matrix[i][0]] + matrix[i]
+
+            // 计算预加重：output[i] = input[i] - coefficient * input[i-1]
+            for j in 0..<cols {
+                result[i][j] = paddedRow[j + 1] - coefficient * paddedRow[j]
             }
         }
+
+        return result
     }
 
     /// 乘窗函数
@@ -102,38 +123,10 @@ struct OnnxFBankProcessor {
     }
 
     /// 计算 FFT 幅值谱
-    private func computeMagnitudeFFT(_ matrix: [[Float]], paddedWindowSize: Int) -> [[Float]] {
-        let fftSize = paddedWindowSize / 2 + 1
-        var output = [[Float]](repeating: [Float](repeating: 0, count: fftSize), count: matrix.count)
-
-        let log2Size = vDSP_Length(log2(Float(paddedWindowSize)))
-        guard let fftSetup = vDSP_create_fftsetup(log2Size, FFTRadix(kFFTRadix2)) else {
-            fatalError("Failed to create FFT setup")
-        }
-
-        for i in 0..<matrix.count {
-            var real = matrix[i]
-            var imaginary = [Float](repeating: 0, count: real.count)
-            var splitComplex = DSPSplitComplex(realp: &real, imagp: &imaginary)
-
-            // 执行 FFT
-            vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2Size, FFTDirection(kFFTDirection_Forward))
-
-            // 计算功率谱（模长的平方）
-            var powerSpectrum = [Float](repeating: 0, count: fftSize)
-            vDSP_zvmags(&splitComplex, 1, &powerSpectrum, 1, vDSP_Length(fftSize))
-
-            // 计算幅值谱（模长）
-            var count = Int32(fftSize)
-            powerSpectrum.withUnsafeMutableBufferPointer { ptr in
-                output[i].withUnsafeMutableBufferPointer { outPtr in
-                    vvsqrtf(outPtr.baseAddress!, ptr.baseAddress!, &count)
-                }
-            }
-        }
-
-        vDSP_destroy_fftsetup(fftSetup)
-        return output
+    
+    
+    func performFFT(on data: [[Float]]) -> [[Float]] {
+        return data
     }
 
     /// 计算功率谱
@@ -175,5 +168,12 @@ struct OnnxFBankProcessor {
         }
 
         return result
+    }
+    
+    func log_____(data:[Float]?) {
+        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+    }
+    func log_____(data:[[Float]]?) {
+        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
 }

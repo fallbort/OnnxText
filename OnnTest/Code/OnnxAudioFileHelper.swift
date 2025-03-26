@@ -41,4 +41,47 @@ class OnnxAudioFileHelper {
             return nil
         }
     }
+    
+    static func loadAudioFileWithResampling(url: URL, targetSampleRate: Float = 16000) -> [Float]? {
+        
+        do {
+            // 1. Load audio file
+            let audioFile = try AVAudioFile(forReading: url)
+            
+            // 2. Set up the audio engine for resampling
+            let audioEngine = AVAudioEngine()
+            let audioPlayerNode = AVAudioPlayerNode()
+            audioEngine.attach(audioPlayerNode)
+            
+            // 3. Set the target format (desired sample rate)
+            let format = AVAudioFormat(standardFormatWithSampleRate: Double(targetSampleRate), channels: audioFile.processingFormat.channelCount)
+            let outputNode = audioEngine.outputNode
+            audioEngine.connect(audioPlayerNode, to: outputNode, format: format)
+            
+            // 4. Read the audio file into an AVAudioPCMBuffer
+            let frameCount = UInt32(audioFile.length)
+            let audioBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount)
+            try audioFile.read(into: audioBuffer!)
+            
+            // 5. Prepare the player node and start the engine
+            audioPlayerNode.scheduleBuffer(audioBuffer!, at: nil, options: .loops, completionHandler: nil)
+            try audioEngine.start()
+            
+            // 6. Extract audio data from buffer
+            let channelData = audioBuffer?.floatChannelData
+            let frameLength = Int(audioBuffer?.frameLength ?? 0)
+            
+            // 7. Convert to [Float] array
+            var audioData = [Float]()
+            for i in 0..<frameLength {
+                audioData.append(channelData?[0][i] ?? 0)
+            }
+            
+            return audioData
+            
+        } catch {
+            print("Error loading or resampling audio file: \(error)")
+            return nil
+        }
+    }
 }

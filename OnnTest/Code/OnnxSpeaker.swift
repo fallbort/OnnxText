@@ -7,6 +7,7 @@
 
 import Foundation
 import Accelerate
+import NumiOS
 
 class OnnxSpeaker {
     var resampleRate: Int = 16000
@@ -22,14 +23,14 @@ class OnnxSpeaker {
     
     func loadWindowAndMelBasis() {
         // 读取 window.json 和 mel_basis.json 文件
-        if let windowData = readJSON(fileName: "wepeaker_window"),
-           let melBasisData = readJSON(fileName: "wepeaker_mel_basis") {
+        if let windowData = Self.readJSONTwo(fileName: "wepeaker_window"),
+           let melBasisData = Self.readJSONTwo(fileName: "wepeaker_mel_basis") {
             self.window = windowData
             self.melBasis = melBasisData
         }
     }
     
-    func readJSON(fileName: String) -> [[Float]]? {
+    static func readJSONTwo(fileName: String) -> [[Float]]? {
         // 读取 JSON 文件并解析为二维浮点数组
         guard let url = Bundle.main.url(forResource: fileName, withExtension: "json"),
               let data = try? Data(contentsOf: url),
@@ -41,15 +42,31 @@ class OnnxSpeaker {
         return floatArray
     }
     
+    static func readJSONOne(fileName: String) -> [Float]? {
+        // 读取 JSON 文件并解析为二维浮点数组
+        guard let url = Bundle.main.url(forResource: fileName, withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data, options: []),
+              let array = json as? [Double]  else {
+            return nil
+        }
+        let floatArray = array.map { Float($0) }
+        return floatArray
+    }
+    
     func extractEmbedding(fromWav wav: [Float]) -> [Float] {
+        self.log_____(data: wav)
         var embeddings = [Float](repeating: 0.0, count: 256)
         var index = 0
         for i in stride(from: 0, to: wav.count, by: 16000 * 3) {
             let wavSegment = Array(wav[i..<min(i + 16000 * 3, wav.count)])
             let weight = Float(wavSegment.count) / 48000.0
-            let paddedWav = padWav(wavSegment, toLength: 16000 * 3)
+            var paddedWav = padWav(wavSegment, toLength: 16000 * 3)
+            paddedWav = paddedWav.map({$0 * 32768.0})
+            self.log_____(data: paddedWav)
             let processor = OnnxFBankProcessor(melBasis: melBasis, window: window.first ?? [])
             let feats = processor.fbankAccelerate(paddedWav)
+            self.log_____(data: feats)
             let normFeats = normalize(feats)
             
             // 使用 ONNX 模型推理
@@ -133,6 +150,7 @@ class OnnxSpeaker {
     
     func run(wav: [Float]) -> Float {
         let rmss = toRMSS(wav: wav)
+        self.log_____(data: rmss)
         var sentenceEmbeddings = [[Float]]()
         var sentenceRmssWeight = [Float]()
         
@@ -219,5 +237,12 @@ class OnnxSpeaker {
             padded.append(0)
         }
         return padded
+    }
+    
+    func log_____(data:[Float]?) {
+        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+    }
+    func log_____(data:[[Float]]?) {
+        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
 }

@@ -4,6 +4,7 @@ target 'OnnTest' do
 use_frameworks!
 
 pod 'onnxruntime-objc'
+pod 'NumiOS'
 
 end
 
