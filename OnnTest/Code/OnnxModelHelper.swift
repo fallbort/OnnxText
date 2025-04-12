@@ -5,6 +5,8 @@
 //  Created by xfb on 2025/3/25.
 //
 
+import NumiOS
+
 class OnnxModelHelper {
     private let ortEnv: ORTEnv
     private let ortSession: ORTSession
@@ -26,10 +28,12 @@ class OnnxModelHelper {
         
     }
     
-    func generate(data:[[[Float]]]) -> [Float]? {
-        let swiftData = self.floatArrayToNSMutableData(data);
+    func generate(data:[[Float]]) -> [Float]? {
+        let swiftData = self.floatArrayToNSMutableData([data]);
         var error: NSError? = nil
-        guard let inputValue = Self.createOrtValueForFloat(swiftData, error: &error) else {
+        var shape = NumiOS.shape(data)
+        shape.insert(1, at: 0)
+        guard let inputValue = Self.createOrtValueForFloat(swiftData, shape: shape, error: &error) else {
             return nil
         }
         
@@ -78,14 +82,14 @@ class OnnxModelHelper {
         return mutableData
     }
     
-    static func createOrtValueForFloat(_ data:NSMutableData, error: inout NSError?) -> ORTValue? {
+    static func createOrtValueForFloat(_ data:NSMutableData,shape:[Int], error: inout NSError?) -> ORTValue? {
         // `data` will hold the memory of the input ORT value.
         // We set it to refer to the memory of the given float (*fp).
         
         // This will create a value with a tensor with the given float's data,
         // of type float, and with shape [1].
         do {
-            let inputShape: [NSNumber] = [1,1,80]
+            let inputShape: [NSNumber] = shape.map { NSNumber(value: $0) }
             let ortValue = try ORTValue(tensorData: data, elementType: .float, shape: inputShape)
             return ortValue
         } catch let err as NSError {

@@ -58,7 +58,8 @@ class OnnxSpeaker {
         self.log_____(data: wav)
         var embeddings = [Float](repeating: 0.0, count: 256)
         var index = 0
-        for i in stride(from: 0, to: wav.count, by: 16000 * 3) {
+        let listCount = stride(from: 0, to: wav.count, by: 16000 * 3)
+        for i in listCount {
             let wavSegment = Array(wav[i..<min(i + 16000 * 3, wav.count)])
             let weight = Float(wavSegment.count) / 48000.0
             var paddedWav = padWav(wavSegment, toLength: 16000 * 3)
@@ -69,22 +70,55 @@ class OnnxSpeaker {
             self.log_____(data: feats)
             let normFeats = normalize(feats)
             
-            // 使用 ONNX 模型推理
+            self.log_____(data: normFeats)
             
-            let embedding = modelHelper?.generate(data: [normFeats])?.first
-            if index < 256 {
-                embeddings[index] = (embedding ?? 0) * weight
+            // 使用 ONNX 模型推理
+            let onnxOutput = modelHelper?.generate(data: normFeats)
+            
+            self.log_____(data: onnxOutput)
+            
+            for outputIndex in 0..<(onnxOutput?.count ?? 0) {
+                let embedding = onnxOutput?[outputIndex]
+                embeddings[outputIndex] += (embedding ?? 0) * weight
             }
+            
             index += 1
         }
+        self.log_____(data: embeddings)
         return embeddings
     }
 
     func normalize(_ matrix: [[Float]]) -> [[Float]] {
         // 标准化矩阵
         var matrix = matrix
-//        self.subtractColumnMean(feats: &matrix)
+        matrix = meanNormalize(feats: matrix)
         return matrix  // 这里只是示范，实际实现需要标准化
+    }
+    
+    func meanNormalize(feats: [[Float]]) -> [[Float]] {
+        let rowCount = feats.count
+        let colCount = feats[0].count
+
+        // 1. 计算每一列的平均值
+        var columnMeans = [Float](repeating: 0, count: colCount)
+        for row in feats {
+            for j in 0..<colCount {
+                columnMeans[j] += row[j]
+            }
+        }
+        for j in 0..<colCount {
+            columnMeans[j] /= Float(rowCount)
+        }
+
+        // 2. 每个元素减去对应列的均值
+        var normalized = feats
+        for i in 0..<rowCount {
+            for j in 0..<colCount {
+                normalized[i][j] -= columnMeans[j]
+            }
+        }
+
+        return normalized
     }
     
     func subtractColumnMean(feats: inout [[Float]]) {
@@ -154,11 +188,25 @@ class OnnxSpeaker {
         var sentenceEmbeddings = [[Float]]()
         var sentenceRmssWeight = [Float]()
         
-        for i in stride(from: 0, to: wav.count, by: 16000 * 6) {
+        let listCount = stride(from: 0, to: wav.count, by: 16000 * 6)
+        for i in listCount {
             let wavPiece = Array(wav[i..<min(i + 16000 * 6, wav.count)])
-            let embedding = extractEmbedding(fromWav: wavPiece)
-            sentenceEmbeddings.append(embedding)
-            sentenceRmssWeight.append(rmss[i / 160])
+            var embedding = extractEmbedding(fromWav: wavPiece)
+            
+            self.log_____(data: embedding)
+            
+            let sentenceEmbedding = normalize(embedding)
+            sentenceEmbeddings.append(sentenceEmbedding)
+
+            // 计算均值
+            let start = i / 160             // start = 2
+            let end = min(start + 600, rmss.count)  // max index = 602
+            let slice = Array(rmss[start..<end])
+            let avg = mean(slice)
+            
+            sentenceRmssWeight.append(avg)
+            
+            self.log_____(data: sentenceRmssWeight)
         }
         
         // 计算相似度矩阵和核心嵌入向量的过程
@@ -192,8 +240,23 @@ class OnnxSpeaker {
             }
         }
         purity /= sentenceRmssWeight.reduce(0, +)
-        
+        NSLog("final result purity check %@", "\(purity)")
         return purity
+    }
+    
+    
+    func normalize(_ vector: [Float]) -> [Float] {
+        var norm: Float = 0.0
+        vDSP_svesq(vector, 1, &norm, vDSP_Length(vector.count))
+        norm = sqrt(norm)
+        return norm > 0 ? vector.map { $0 / norm } : vector
+    }
+
+    func mean(_ values: [Float]) -> Float {
+        guard !values.isEmpty else { return 0.0 }
+        var result: Float = 0.0
+        vDSP_meanv(values, 1, &result, vDSP_Length(values.count))
+        return result
     }
     
     func dotProduct(_ a: [Float], _ b: [Float]) -> Float {
@@ -240,9 +303,9 @@ class OnnxSpeaker {
     }
     
     func log_____(data:[Float]?) {
-        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+//        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
     func log_____(data:[[Float]]?) {
-        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+//        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
 }

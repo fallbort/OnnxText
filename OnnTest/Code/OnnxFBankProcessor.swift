@@ -47,7 +47,7 @@ struct OnnxFBankProcessor {
         // 6. **FFT 幅值谱**
         var spectrum = computeFFT(inputData: stridedInput)
         
-        self.log_____(data: spectrum)
+        self.log_____(data: spectrum) 
 
         // 7. **功率谱**
         if usePower {
@@ -57,9 +57,13 @@ struct OnnxFBankProcessor {
         self.log_____(data: spectrum)
         // 8. **Mel 滤波**
         var melEnergies = applyMelFilter(spectrum, melBasis: melBasis)
+        
+        self.log_____(data: melEnergies)
 
         // 9. **取 Log**
         logTransform(&melEnergies)
+        
+        self.log_____(data: melEnergies)
 
         return melEnergies
     }
@@ -281,9 +285,9 @@ struct OnnxFBankProcessor {
     }
     
     func log_____(data:[Float]?) {
-        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+//        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
     func log_____(data:[[Float]]?) {
-        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
+//        NSLog("data: \(NumiOS.sum(data ?? [0]) as (Float,Float)),count = \(NumiOS.shape(data ?? []))")
     }
 }
