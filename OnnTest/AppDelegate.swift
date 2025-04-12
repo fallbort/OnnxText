@@ -17,20 +17,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Override point for customization after application launch.
         
         let speaker = OnnxSpeaker()
-//        if let url = Bundle.main.url(forResource: "test", withExtension: "WAV"),
-//           let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
-//            let shape = NumiOS.shape(floats)
-//            let sum:(Float,Float) = NumiOS.sum(floats)
-//            let ret = speaker.run(wav: floats)
-//            NSLog("ret=\(ret)")
-//        }
-        
-        if let floats = OnnxSpeaker.readJSONOne(fileName: "aaa_first_400") {
+        if let url = Bundle.main.url(forResource: "test444", withExtension: "wav"),
+           let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
             let shape = NumiOS.shape(floats)
             let sum:(Float,Float) = NumiOS.sum(floats)
             let ret = speaker.run(wav: floats)
             NSLog("ret=\(ret)")
         }
+        
         return true
     }
 
