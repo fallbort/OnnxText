@@ -14,25 +14,11 @@ class OnnxSpeaker {
     var melBasis: [[Float]] = []
     var window: [[Float]] = []
     
-    fileprivate lazy var modelHelpers:[OnnxModelHelper] = []
-    
-    fileprivate var modelSemaphore:DispatchSemaphore?
+    fileprivate lazy var modelHelper = OnnxModelHelper()
     
     init() {
         // 加载 JSON 文件中的 Mel 基础和 Window 数据
         loadWindowAndMelBasis()
-        loadModelHelpers()
-    }
-    
-    func loadModelHelpers() {
-        OnnxLogHelper.log("modelHelpers test 1")
-        for i in 0..<4 {
-            if let helper = OnnxModelHelper() {
-                modelHelpers.append(helper)
-            }
-        }
-        modelSemaphore = DispatchSemaphore(value: self.modelHelpers.count) // 限制最大并发数
-        OnnxLogHelper.log("modelHelpers test 2")
     }
     
     func loadWindowAndMelBasis() {
@@ -68,17 +54,10 @@ class OnnxSpeaker {
         return floatArray
     }
     
-    func extractEmbedding(fromWav wav: [Float],complete:@escaping (([Float])->()))  {
-        guard let semaphore = self.modelSemaphore else {
-            complete([])
-            return
-        }
+    func extractEmbedding(fromWav wav: [Float]) -> [Float] {
         self.log_____(data: wav)
         var embeddings = [Float](repeating: 0.0, count: 256)
-        
-        // 创建并发队列和信号量来控制并发数量
-        let queue = DispatchQueue(label: "com.concurrent.queue", attributes: .concurrent)
-        let group = DispatchGroup()
+        var index = 0
         let listCount = stride(from: 0, to: wav.count, by: 16000 * 3)
         for i in listCount {
             let wavSegment = Array(wav[i..<min(i + 16000 * 3, wav.count)])
@@ -91,38 +70,20 @@ class OnnxSpeaker {
             self.log_____(data: feats)
             let normFeats = normalize(feats)
             self.log_____(data: normFeats)
-            
             OnnxLogHelper.log("time test 32227")
-            let embeddingsLock = NSLock()
-            // 使用 DispatchQueue 异步执行每个模型的推理
-            queue.async(group: group) {
-                // 等待信号量
-                semaphore.wait()
-                OnnxLogHelper.log("time test runloop in")
-                // 使用 ONNX 模型推理
-                let modelHelper = self.modelHelpers.first(where: {$0.getAndSetIsUsing() == true})
-                let onnxOutput = modelHelper?.generate(data: normFeats)
-                embeddingsLock.lock()
-                for outputIndex in 0..<(onnxOutput?.count ?? 0) {
-                    let embedding = onnxOutput?[outputIndex]
-                    embeddings[outputIndex] += (embedding ?? 0) * weight
-                }
-                embeddingsLock.unlock()
-                modelHelper?.releaseIsUsing()
-                OnnxLogHelper.log("time test runloop out1")
-                // 释放信号量，允许其他线程执行
-                semaphore.signal()
+            // 使用 ONNX 模型推理
+            let onnxOutput = modelHelper?.generate(data: normFeats)
+            OnnxLogHelper.log("time test 32228")
+            self.log_____(data: onnxOutput)
+            
+            for outputIndex in 0..<(onnxOutput?.count ?? 0) {
+                let embedding = onnxOutput?[outputIndex]
+                embeddings[outputIndex] += (embedding ?? 0) * weight
             }
-                
+            index += 1
         }
-        
-        // 等待所有并发任务完成
-        group.notify(queue: DispatchQueue.main) {
-            self.log_____(data: embeddings)
-            // 这里可以返回 embeddings 或进行其他后续操作
-            OnnxLogHelper.log("time test runloop outall")
-            complete(embeddings)
-        }
+        self.log_____(data: embeddings)
+        return embeddings
     }
     
     func scaleWav(_ input: [Float], scale: Float) -> [Float] {
@@ -239,55 +200,30 @@ class OnnxSpeaker {
         return rmss
     }
     
-    func run(wav: [Float], complete: @escaping (Float) -> Void) {
+    func run(wav: [Float]) -> Float {
         OnnxLogHelper.log("time test 31")
         let rmss = toRMSS(wav: wav)
         self.log_____(data: rmss)
-
         var sentenceEmbeddings = [[Float]]()
         var sentenceRmssWeight = [Float]()
-        let listCount = stride(from: 0, to: wav.count, by: 16000 * 6)
-
         OnnxLogHelper.log("time test 32")
-        
-        let dispatchGroup = DispatchGroup()
-        let lock = NSLock() // 用于线程安全写入数组
-
+        let listCount = stride(from: 0, to: wav.count, by: 16000 * 6)
         for i in listCount {
             let wavPiece = Array(wav[i..<min(i + 16000 * 6, wav.count)])
-
-            OnnxLogHelper.log("dispatchGroup enter")
-            dispatchGroup.enter()
-            extractEmbedding(fromWav: wavPiece) { embedding in
-                self.log_____(data: embedding)
-                let sentenceEmbedding = self.normalize(embedding)
-                
-                // 加锁写入共享数组
-                lock.lock()
-                sentenceEmbeddings.append(sentenceEmbedding)
-                
-                // 计算 rmss 平均值
-                let start = i / 160
-                let end = min(start + 600, rmss.count)
-                let slice = Array(rmss[start..<end])
-                let avg = self.mean(slice)
-                sentenceRmssWeight.append(avg)
-                self.log_____(data: sentenceRmssWeight)
-                lock.unlock()
-                OnnxLogHelper.log("dispatchGroup out")
-                dispatchGroup.leave()
-            }
+            let embedding = extractEmbedding(fromWav: wavPiece)
+            self.log_____(data: embedding)
+            
+            let sentenceEmbedding = normalize(embedding)
+            sentenceEmbeddings.append(sentenceEmbedding)
+            // 计算均值
+            let start = i / 160             // start = 2
+            let end = min(start + 600, rmss.count)  // max index = 602
+            let slice = Array(rmss[start..<end])
+            let avg = mean(slice)
+            sentenceRmssWeight.append(avg)
+            self.log_____(data: sentenceRmssWeight)
         }
-
-        // 所有 embedding 处理完之后再继续
-        dispatchGroup.notify(queue: .main) {
-            OnnxLogHelper.log("time test 33")
-            let purity = self.runAfter(sentenceEmbeddings: sentenceEmbeddings, sentenceRmssWeight: sentenceRmssWeight)
-            complete(purity)
-        }
-    }
-    
-    func runAfter(sentenceEmbeddings:[[Float]],sentenceRmssWeight:[Float]) -> Float {
+        OnnxLogHelper.log("time test 33")
         // 计算相似度矩阵和核心嵌入向量的过程
         // 具体的实现会涉及线性代数计算，可以利用 Accelerate 或手动实现矩阵计算
         let simMatrix = computeSimilarityMatrix(from: sentenceEmbeddings)
@@ -313,7 +249,6 @@ class OnnxSpeaker {
         purity /= sentenceRmssWeight.reduce(0, +)
         NSLog("final result purity check %@", "\(purity)")
         OnnxLogHelper.log("time test 37")
-        
         return purity
     }
     

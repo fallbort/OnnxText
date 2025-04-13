@@ -21,12 +21,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if let url = Bundle.main.url(forResource: "test444", withExtension: "wav"),
            let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
             OnnxLogHelper.log("time test 2")
-            let ret = speaker.run(wav: floats) { ret in
-                NSLog("ret=\(ret)")
-                OnnxLogHelper.log("time test 3")
-            }
-            
-            
+            let ret = speaker.run(wav: floats)
+            NSLog("ret=\(ret)")
+            OnnxLogHelper.log("time test 3")
         }
         
         return true
