@@ -16,13 +16,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Override point for customization after application launch.
         
+        OnnxLogHelper.log("time test 1")
         let speaker = OnnxSpeaker()
         if let url = Bundle.main.url(forResource: "test444", withExtension: "wav"),
            let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
-            let shape = NumiOS.shape(floats)
-            let sum:(Float,Float) = NumiOS.sum(floats)
-            let ret = speaker.run(wav: floats)
-            NSLog("ret=\(ret)")
+            OnnxLogHelper.log("time test 2")
+            let ret = speaker.run(wav: floats) { ret in
+                NSLog("ret=\(ret)")
+                OnnxLogHelper.log("time test 3")
+            }
+            
+            
         }
         
         return true

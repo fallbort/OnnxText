@@ -11,6 +11,27 @@ class OnnxModelHelper {
     private let ortEnv: ORTEnv
     private let ortSession: ORTSession
     
+    fileprivate var isUsing = false
+    fileprivate var lock = NSLock()
+    
+    func getAndSetIsUsing() -> Bool {
+        self.lock.lock()
+        let isUsing = self.isUsing
+        var setted = false
+        if isUsing == false {
+            self.isUsing = true
+            setted = true
+        }
+        self.lock.unlock()
+        return setted
+    }
+    
+    func releaseIsUsing() {
+        self.lock.lock()
+        self.isUsing = false
+        self.lock.unlock()
+    }
+    
     enum SpeechRecognizerError: Error {
       case Error(_ message: String)
     }

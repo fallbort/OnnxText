@@ -14,11 +14,25 @@ class OnnxSpeaker {
     var melBasis: [[Float]] = []
     var window: [[Float]] = []
     
-    fileprivate lazy var modelHelper = OnnxModelHelper()
+    fileprivate lazy var modelHelpers:[OnnxModelHelper] = []
+    
+    fileprivate var modelSemaphore:DispatchSemaphore?
     
     init() {
         // 加载 JSON 文件中的 Mel 基础和 Window 数据
         loadWindowAndMelBasis()
+        loadModelHelpers()
+    }
+    
+    func loadModelHelpers() {
+        OnnxLogHelper.log("modelHelpers test 1")
+        for i in 0..<4 {
+            if let helper = OnnxModelHelper() {
+                modelHelpers.append(helper)
+            }
+        }
+        modelSemaphore = DispatchSemaphore(value: self.modelHelpers.count) // 限制最大并发数
+        OnnxLogHelper.log("modelHelpers test 2")
     }
     
     func loadWindowAndMelBasis() {
@@ -54,38 +68,72 @@ class OnnxSpeaker {
         return floatArray
     }
     
-    func extractEmbedding(fromWav wav: [Float]) -> [Float] {
+    func extractEmbedding(fromWav wav: [Float],complete:@escaping (([Float])->()))  {
+        guard let semaphore = self.modelSemaphore else {
+            complete([])
+            return
+        }
         self.log_____(data: wav)
         var embeddings = [Float](repeating: 0.0, count: 256)
-        var index = 0
+        
+        // 创建并发队列和信号量来控制并发数量
+        let queue = DispatchQueue(label: "com.concurrent.queue", attributes: .concurrent)
+        let group = DispatchGroup()
         let listCount = stride(from: 0, to: wav.count, by: 16000 * 3)
         for i in listCount {
             let wavSegment = Array(wav[i..<min(i + 16000 * 3, wav.count)])
             let weight = Float(wavSegment.count) / 48000.0
             var paddedWav = padWav(wavSegment, toLength: 16000 * 3)
-            paddedWav = paddedWav.map({$0 * 32768.0})
+            paddedWav = scaleWav(paddedWav, scale: 32768.0)
             self.log_____(data: paddedWav)
             let processor = OnnxFBankProcessor(melBasis: melBasis, window: window.first ?? [])
             let feats = processor.fbankAccelerate(paddedWav)
             self.log_____(data: feats)
             let normFeats = normalize(feats)
-            
             self.log_____(data: normFeats)
             
-            // 使用 ONNX 模型推理
-            let onnxOutput = modelHelper?.generate(data: normFeats)
-            
-            self.log_____(data: onnxOutput)
-            
-            for outputIndex in 0..<(onnxOutput?.count ?? 0) {
-                let embedding = onnxOutput?[outputIndex]
-                embeddings[outputIndex] += (embedding ?? 0) * weight
+            OnnxLogHelper.log("time test 32227")
+            let embeddingsLock = NSLock()
+            // 使用 DispatchQueue 异步执行每个模型的推理
+            queue.async(group: group) {
+                // 等待信号量
+                semaphore.wait()
+                OnnxLogHelper.log("time test runloop in")
+                // 使用 ONNX 模型推理
+                let modelHelper = self.modelHelpers.first(where: {$0.getAndSetIsUsing() == true})
+                let onnxOutput = modelHelper?.generate(data: normFeats)
+                embeddingsLock.lock()
+                for outputIndex in 0..<(onnxOutput?.count ?? 0) {
+                    let embedding = onnxOutput?[outputIndex]
+                    embeddings[outputIndex] += (embedding ?? 0) * weight
+                }
+                embeddingsLock.unlock()
+                modelHelper?.releaseIsUsing()
+                OnnxLogHelper.log("time test runloop out1")
+                // 释放信号量，允许其他线程执行
+                semaphore.signal()
             }
-            
-            index += 1
+                
         }
-        self.log_____(data: embeddings)
-        return embeddings
+        
+        // 等待所有并发任务完成
+        group.notify(queue: DispatchQueue.main) {
+            self.log_____(data: embeddings)
+            // 这里可以返回 embeddings 或进行其他后续操作
+            OnnxLogHelper.log("time test runloop outall")
+            complete(embeddings)
+        }
+    }
+    
+    func scaleWav(_ input: [Float], scale: Float) -> [Float] {
+        var output = [Float](repeating: 0.0, count: input.count)
+        var scalar = scale
+        input.withUnsafeBufferPointer { inPtr in
+            output.withUnsafeMutableBufferPointer { outPtr in
+                vDSP_vsmul(inPtr.baseAddress!, 1, &scalar, outPtr.baseAddress!, 1, vDSP_Length(input.count))
+            }
+        }
+        return output
     }
 
     func normalize(_ matrix: [[Float]]) -> [[Float]] {
@@ -99,22 +147,33 @@ class OnnxSpeaker {
         let rowCount = feats.count
         let colCount = feats[0].count
 
-        // 1. 计算每一列的平均值
-        var columnMeans = [Float](repeating: 0, count: colCount)
-        for row in feats {
-            for j in 0..<colCount {
-                columnMeans[j] += row[j]
+        // Step 1: 转置 feats 成 [col][row]，便于按列计算（并发）
+        var transposed = Array(repeating: [Float](repeating: 0, count: rowCount), count: colCount)
+        DispatchQueue.concurrentPerform(iterations: colCount) { col in
+            for row in 0..<rowCount {
+                transposed[col][row] = feats[row][col]
             }
         }
-        for j in 0..<colCount {
-            columnMeans[j] /= Float(rowCount)
+
+        // Step 2: 使用 vDSP 并发计算每列的平均值
+        var columnMeans = [Float](repeating: 0, count: colCount)
+        DispatchQueue.concurrentPerform(iterations: colCount) { j in
+            vDSP_meanv(transposed[j], 1, &columnMeans[j], vDSP_Length(rowCount))
         }
 
-        // 2. 每个元素减去对应列的均值
-        var normalized = feats
-        for i in 0..<rowCount {
-            for j in 0..<colCount {
-                normalized[i][j] -= columnMeans[j]
+        // Step 3: 每列减去均值（向量加上 -mean），并发
+        DispatchQueue.concurrentPerform(iterations: colCount) { j in
+            var negMean = -columnMeans[j]
+            transposed[j].withUnsafeMutableBufferPointer { ptr in
+                vDSP_vsadd(ptr.baseAddress!, 1, &negMean, ptr.baseAddress!, 1, vDSP_Length(rowCount))
+            }
+        }
+
+        // Step 4: 转置回来，变回 [row][col]，并发
+        var normalized = Array(repeating: [Float](repeating: 0, count: colCount), count: rowCount)
+        DispatchQueue.concurrentPerform(iterations: rowCount) { row in
+            for col in 0..<colCount {
+                normalized[row][col] = transposed[col][row]
             }
         }
 
@@ -159,7 +218,7 @@ class OnnxSpeaker {
     func toRMSS(wav: [Float], hopSize: Int = 160, windowSize: Int = 1024) -> [Float] {
         let fNums = wav.count / hopSize
         var paddedWav = wav
-
+        OnnxLogHelper.log("time test 311")
         // 反射填充
         let padSize = windowSize / 2
         let leftPad = wav.prefix(padSize).reversed()
@@ -167,57 +226,71 @@ class OnnxSpeaker {
         paddedWav = Array(leftPad) + wav + Array(rightPad)
         
         var rmss = [Float](repeating: 0, count: fNums)
-        
-        for i in 0..<fNums {
-            let start = i * hopSize
-            let end = start + windowSize
-            let segment = paddedWav[start..<end]
-            
-            // 计算均方根（RMS）
-            var sumSquares: Float = 0.0
-            vDSP_svesq(segment.map { $0 }, 1, &sumSquares, vDSP_Length(windowSize))
-            rmss[i] = sqrt(sumSquares / Float(windowSize))
+        paddedWav.withUnsafeBufferPointer { ptr in
+            for i in 0..<fNums {
+                let start = i * hopSize
+                let segmentPointer = ptr.baseAddress! + start
+                var sumSquares: Float = 0.0
+                vDSP_svesq(segmentPointer, 1, &sumSquares, vDSP_Length(windowSize))
+                rmss[i] = sqrt(sumSquares / Float(windowSize))
+            }
         }
-        
+        OnnxLogHelper.log("time test 313")
         return rmss
     }
     
-    func run(wav: [Float]) -> Float {
+    func run(wav: [Float], complete: @escaping (Float) -> Void) {
+        OnnxLogHelper.log("time test 31")
         let rmss = toRMSS(wav: wav)
         self.log_____(data: rmss)
+
         var sentenceEmbeddings = [[Float]]()
         var sentenceRmssWeight = [Float]()
-        
         let listCount = stride(from: 0, to: wav.count, by: 16000 * 6)
+
+        OnnxLogHelper.log("time test 32")
+        
+        let dispatchGroup = DispatchGroup()
+        let lock = NSLock() // 用于线程安全写入数组
+
         for i in listCount {
             let wavPiece = Array(wav[i..<min(i + 16000 * 6, wav.count)])
-            var embedding = extractEmbedding(fromWav: wavPiece)
-            
-            self.log_____(data: embedding)
-            
-            let sentenceEmbedding = normalize(embedding)
-            sentenceEmbeddings.append(sentenceEmbedding)
 
-            // 计算均值
-            let start = i / 160             // start = 2
-            let end = min(start + 600, rmss.count)  // max index = 602
-            let slice = Array(rmss[start..<end])
-            let avg = mean(slice)
-            
-            sentenceRmssWeight.append(avg)
-            
-            self.log_____(data: sentenceRmssWeight)
-        }
-        
-        // 计算相似度矩阵和核心嵌入向量的过程
-        // 具体的实现会涉及线性代数计算，可以利用 Accelerate 或手动实现矩阵计算
-        var simMatrix = [[Float]](repeating: [Float](repeating: 0.0, count: sentenceEmbeddings.count), count: sentenceEmbeddings.count)
-        for i in 0..<sentenceEmbeddings.count {
-            for j in 0..<sentenceEmbeddings.count {
-                simMatrix[i][j] = dotProduct(sentenceEmbeddings[i], sentenceEmbeddings[j])
+            OnnxLogHelper.log("dispatchGroup enter")
+            dispatchGroup.enter()
+            extractEmbedding(fromWav: wavPiece) { embedding in
+                self.log_____(data: embedding)
+                let sentenceEmbedding = self.normalize(embedding)
+                
+                // 加锁写入共享数组
+                lock.lock()
+                sentenceEmbeddings.append(sentenceEmbedding)
+                
+                // 计算 rmss 平均值
+                let start = i / 160
+                let end = min(start + 600, rmss.count)
+                let slice = Array(rmss[start..<end])
+                let avg = self.mean(slice)
+                sentenceRmssWeight.append(avg)
+                self.log_____(data: sentenceRmssWeight)
+                lock.unlock()
+                OnnxLogHelper.log("dispatchGroup out")
+                dispatchGroup.leave()
             }
         }
-        
+
+        // 所有 embedding 处理完之后再继续
+        dispatchGroup.notify(queue: .main) {
+            OnnxLogHelper.log("time test 33")
+            let purity = self.runAfter(sentenceEmbeddings: sentenceEmbeddings, sentenceRmssWeight: sentenceRmssWeight)
+            complete(purity)
+        }
+    }
+    
+    func runAfter(sentenceEmbeddings:[[Float]],sentenceRmssWeight:[Float]) -> Float {
+        // 计算相似度矩阵和核心嵌入向量的过程
+        // 具体的实现会涉及线性代数计算，可以利用 Accelerate 或手动实现矩阵计算
+        let simMatrix = computeSimilarityMatrix(from: sentenceEmbeddings)
         let maxCluster = findMaxCluster(simMatrix)
         var kernelEmbedding = sentenceEmbeddings[maxCluster].map { $0 / sqrt($0 * $0) }  // 归一化
         for _ in 0..<5 {
@@ -227,12 +300,10 @@ class OnnxSpeaker {
             }
             kernelEmbedding = updateKernelEmbedding(sentenceEmbeddings, kernelDis)
         }
-        
         var kernelDis = [Float]()
         for i in 0..<sentenceEmbeddings.count {
             kernelDis.append(dotProduct(kernelEmbedding, sentenceEmbeddings[i]))
         }
-        
         var purity: Float = 0
         for i in 0..<kernelDis.count {
             if kernelDis[i] > 0.6 {
@@ -241,6 +312,8 @@ class OnnxSpeaker {
         }
         purity /= sentenceRmssWeight.reduce(0, +)
         NSLog("final result purity check %@", "\(purity)")
+        OnnxLogHelper.log("time test 37")
+        
         return purity
     }
     
@@ -259,12 +332,26 @@ class OnnxSpeaker {
         return result
     }
     
+    
     func dotProduct(_ a: [Float], _ b: [Float]) -> Float {
         var result: Float = 0.0
-        for i in 0..<a.count {
-            result += a[i] * b[i]
-        }
+        vDSP_dotpr(a, 1, b, 1, &result, vDSP_Length(a.count))
         return result
+    }
+
+    func computeSimilarityMatrix(from sentenceEmbeddings: [[Float]]) -> [[Float]] {
+        let count = sentenceEmbeddings.count
+        var simMatrix = [[Float]](repeating: [Float](repeating: 0.0, count: count), count: count)
+
+        for i in 0..<count {
+            for j in i..<count {  // 优化：利用对称性，减少一半计算
+                let sim = dotProduct(sentenceEmbeddings[i], sentenceEmbeddings[j])
+                simMatrix[i][j] = sim
+                simMatrix[j][i] = sim  // 对称矩阵
+            }
+        }
+
+        return simMatrix
     }
 
     func findMaxCluster(_ simMatrix: [[Float]]) -> Int {
@@ -281,17 +368,40 @@ class OnnxSpeaker {
     }
 
     func updateKernelEmbedding(_ embeddings: [[Float]], _ kernelDis: [Bool]) -> [Float] {
-        var sum = [Float](repeating: 0.0, count: embeddings[0].count)
+        let dim = embeddings[0].count
+        var sum = [Float](repeating: 0.0, count: dim)
         var count = 0
+
         for i in 0..<kernelDis.count {
             if kernelDis[i] {
-                for j in 0..<embeddings[i].count {
-                    sum[j] += embeddings[i][j]
+                let emb = embeddings[i]
+                emb.withUnsafeBufferPointer { embPtr in
+                    sum.withUnsafeMutableBufferPointer { sumPtr in
+                        vDSP_vadd(sumPtr.baseAddress!, 1,
+                                  embPtr.baseAddress!, 1,
+                                  sumPtr.baseAddress!, 1,
+                                  vDSP_Length(dim))
+                    }
                 }
                 count += 1
             }
         }
-        return sum.map { $0 / Float(count) }
+
+        // 防止除以 0
+        guard count > 0 else { return sum }
+
+        var floatCount = Float(count)
+        var result = [Float](repeating: 0.0, count: dim)
+        sum.withUnsafeBufferPointer { sumPtr in
+            result.withUnsafeMutableBufferPointer { resPtr in
+                vDSP_vsdiv(sumPtr.baseAddress!, 1,
+                           &floatCount,
+                           resPtr.baseAddress!, 1,
+                           vDSP_Length(dim))
+            }
+        }
+
+        return result
     }
 
     func padWav(_ wav: [Float], toLength length: Int) -> [Float] {
