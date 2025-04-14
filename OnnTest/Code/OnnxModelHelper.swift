@@ -42,7 +42,10 @@ class OnnxModelHelper {
             guard let modelPath = Bundle.main.path(forResource: "cnceleb_resnet34", ofType: "onnx") else {
               throw SpeechRecognizerError.Error("Failed to find model file.")
             }
-            ortSession = try ORTSession(env: ortEnv, modelPath: modelPath, sessionOptions: nil)
+            let options = try ORTSessionOptions()
+            let mlOptions = ORTCoreMLExecutionProviderOptions()
+            try options.appendCoreMLExecutionProvider(with: mlOptions)
+            ortSession = try ORTSession(env: ortEnv, modelPath: modelPath, sessionOptions: options)
         }catch {
             return nil
         }
