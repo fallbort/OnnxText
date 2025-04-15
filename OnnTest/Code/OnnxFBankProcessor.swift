@@ -188,7 +188,8 @@ struct OnnxFBankProcessor {
         }
 
         let rowCount = inputData.count
-        var outputData = [[Float]](repeating: [Float](repeating: 0, count: outputCount), count: rowCount)
+        var outputData = [[Float]](repeating: [], count: rowCount)
+        let lock = NSLock() // 加锁避免并发写入导致崩溃
 
         DispatchQueue.concurrentPerform(iterations: rowCount) { i in
             let row = inputData[i]
@@ -218,7 +219,9 @@ struct OnnxFBankProcessor {
                 magnitudes[i] = value / 2.0 // python的值小了一半，人工减半
             }
 
+            lock.lock()
             outputData[i] = magnitudes
+            lock.unlock()
         }
 
         vDSP_destroy_fftsetup(fftSetup)
