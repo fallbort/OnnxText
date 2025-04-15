@@ -11,12 +11,15 @@ import NumiOS
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
-
+    var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Override point for customization after application launch.
-        
+
         OnnxLogHelper.log("time test 1")
+        let beginTime = Date().timeIntervalSince1970
+        OnnxLogHelper.beginTime = beginTime
+        NSLog("time begin \(beginTime)")
         let speaker = OnnxSpeaker()
         if let url = Bundle.main.url(forResource: "test444", withExtension: "wav"),
            let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
@@ -24,7 +27,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let ret = speaker.run(wav: floats)
             NSLog("ret=\(ret)")
             OnnxLogHelper.log("time test 3")
+            OnnxLogHelper.result = ret
         }
+        let endTime = Date().timeIntervalSince1970
+        OnnxLogHelper.endTime = endTime
+        NSLog("time end \(endTime)")
+        
         
         return true
     }

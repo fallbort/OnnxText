@@ -87,22 +87,35 @@ struct OnnxFBankProcessor {
 
     /// 预加重
     func preEmphasize(matrix: [[Float]], coefficient: Float) -> [[Float]] {
-        return self.preEmphasizeParallel(matrix: matrix, coefficient: coefficient)
+        self.log_____(data: matrix)
+        let result = self.preEmphasizeParallel(matrix: matrix, coefficient: coefficient)
+        self.log_____(data: result)
+        return result
     }
     
     func preEmphasizeParallel(matrix: [[Float]], coefficient: Float) -> [[Float]] {
         let rowCount = matrix.count
         let colCount = matrix[0].count
-        var result = Array(repeating: [Float](repeating: 0, count: colCount), count: rowCount)
 
-        DispatchQueue.concurrentPerform(iterations: rowCount) { i in
-            let input = matrix[i]
-            var output = [Float](repeating: 0, count: colCount)
-            output[0] = input[0]
-            for j in 1..<colCount {
-                output[j] = input[j] - coefficient * input[j - 1]
+        // Step 1: 扁平化结果数组
+        var resultFlat = [Float](repeating: 0, count: rowCount * colCount)
+
+        resultFlat.withUnsafeMutableBufferPointer { resultPtr in
+            DispatchQueue.concurrentPerform(iterations: rowCount) { i in
+                let input = matrix[i]
+                let start = i * colCount
+                resultPtr[start] = input[0]
+                for j in 1..<colCount {
+                    resultPtr[start + j] = input[j] - coefficient * input[j - 1]
+                }
             }
-            result[i] = output
+        }
+
+        // Step 2: 拆成 [[Float]]
+        var result = [[Float]]()
+        for i in 0..<rowCount {
+            let start = i * colCount
+            result.append(Array(resultFlat[start..<start + colCount]))
         }
 
         return result
@@ -179,7 +192,33 @@ struct OnnxFBankProcessor {
 
         DispatchQueue.concurrentPerform(iterations: rowCount) { i in
             let row = inputData[i]
-            outputData[i] = computeSingleFFT(row: row, fftSetup: fftSetup, log2n: log2n, halfCount: halfCount, outputCount: outputCount)
+            let scaleFactor: Float = 1.0 // Python `rfft` 默认不缩放
+
+            var realParts = [Float](repeating: 0, count: halfCount)
+            var imagParts = [Float](repeating: 0, count: halfCount)
+            var dspSplitComplex = DSPSplitComplex(realp: &realParts, imagp: &imagParts)
+
+            var rowCopy = row
+            rowCopy.withUnsafeMutableBufferPointer { buffer in
+                buffer.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfCount) { complexPointer in
+                    vDSP_ctoz(complexPointer, 2, &dspSplitComplex, 1, vDSP_Length(halfCount))
+                }
+            }
+
+            vDSP_fft_zrip(fftSetup, &dspSplitComplex, 1, log2n, FFTDirection(kFFTDirection_Forward))
+
+            var magnitudes = [Float](repeating: 0, count: outputCount)
+            magnitudes[0] = abs(dspSplitComplex.realp[0]) * scaleFactor / 2.0 // python的值小了一半，人工减半
+            magnitudes[halfCount] = abs(dspSplitComplex.imagp[0]) * scaleFactor
+
+            for i in 1..<halfCount {
+                let real = dspSplitComplex.realp[i]
+                let imag = dspSplitComplex.imagp[i]
+                let value = sqrt(real * real + imag * imag) * scaleFactor
+                magnitudes[i] = value / 2.0 // python的值小了一半，人工减半
+            }
+
+            outputData[i] = magnitudes
         }
 
         vDSP_destroy_fftsetup(fftSetup)
@@ -193,7 +232,10 @@ struct OnnxFBankProcessor {
     }
     
     private func applyMelFilter(_ spectrum: [[Float]], melBasis: [[Float]]) -> [[Float]] {
-        return self.applyMelFilterParallel(spectrum, melBasis: melBasis)
+        self.log_____(data: spectrum)
+        let result = self.applyMelFilterParallel(spectrum, melBasis: melBasis)
+        self.log_____(data: result)
+        return result
     }
     
     private func applyMelFilterParallel(_ spectrum: [[Float]], melBasis: [[Float]]) -> [[Float]] {
@@ -202,20 +244,23 @@ struct OnnxFBankProcessor {
         let fftSize = spectrum[0].count
 
         // 把 melBasis 转为扁平数组以供 vDSP 使用
-        var flatMel = melBasis.flatMap { $0 }
-        var melEnergies = [[Float]](repeating: [Float](repeating: 0, count: numMelFilters), count: numFrames)
+        let flatMel = melBasis.flatMap { $0 }
 
-        DispatchQueue.concurrentPerform(iterations: numFrames) { i in
-            let inputFrame = spectrum[i]
-            var result = [Float](repeating: 0.0, count: numMelFilters)
+        // 创建扁平输出数组
+        var flatOutput = [Float](repeating: 0.0, count: numFrames * numMelFilters)
 
-            inputFrame.withUnsafeBufferPointer { inputPtr in
-                flatMel.withUnsafeBufferPointer { melPtr in
-                    result.withUnsafeMutableBufferPointer { resultPtr in
+        // 多线程并行处理
+        flatOutput.withUnsafeMutableBufferPointer { outPtr in
+            flatMel.withUnsafeBufferPointer { melPtr in
+                DispatchQueue.concurrentPerform(iterations: numFrames) { i in
+                    let inputFrame = spectrum[i]
+                    inputFrame.withUnsafeBufferPointer { inputPtr in
+                        let resultPtr = outPtr.baseAddress! + i * numMelFilters
+
                         vDSP_mmul(
                             melPtr.baseAddress!, 1,
                             inputPtr.baseAddress!, 1,
-                            resultPtr.baseAddress!, 1,
+                            resultPtr, 1,
                             vDSP_Length(numMelFilters),
                             1,
                             vDSP_Length(fftSize)
@@ -223,7 +268,14 @@ struct OnnxFBankProcessor {
                     }
                 }
             }
-            melEnergies[i] = result
+        }
+
+        // 将扁平数组转换为二维数组
+        var melEnergies = [[Float]](repeating: [], count: numFrames)
+        for i in 0..<numFrames {
+            let start = i * numMelFilters
+            let end = start + numMelFilters
+            melEnergies[i] = Array(flatOutput[start..<end])
         }
 
         return melEnergies

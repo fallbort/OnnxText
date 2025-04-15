@@ -99,43 +99,139 @@ class OnnxSpeaker {
 
     func normalize(_ matrix: [[Float]]) -> [[Float]] {
         // 标准化矩阵
-        var matrix = matrix
-        matrix = meanNormalize(feats: matrix)
-        return matrix  // 这里只是示范，实际实现需要标准化
+        let matrix = matrix
+        self.log_____(data: matrix)
+        let result = meanNormalize(feats: matrix)
+        self.log_____(data: result)
+        return result
     }
+//    
+//    func meanNormalize(feats: [[Float]]) -> [[Float]] {
+//        if #available(iOS 14.6, *) {
+//            // 适用于 iOS 14.6 及以上系统的代码
+//            let rowCount = feats.count
+//            let colCount = feats[0].count
+//
+//            // Step 1: 转置 feats 成 [col][row]，便于按列计算（并发）
+//            var transposed = Array(repeating: [Float](repeating: 0, count: rowCount), count: colCount)
+//            DispatchQueue.concurrentPerform(iterations: colCount) { col in
+//                for row in 0..<rowCount {
+//                    transposed[col][row] = feats[row][col]
+//                }
+//            }
+//
+//            // Step 2: 使用 vDSP 并发计算每列的平均值
+//            var columnMeans = [Float](repeating: 0, count: colCount)
+//            DispatchQueue.concurrentPerform(iterations: colCount) { j in
+//                vDSP_meanv(transposed[j], 1, &columnMeans[j], vDSP_Length(rowCount))
+//            }
+//
+//            // Step 3: 每列减去均值（向量加上 -mean），并发
+//            DispatchQueue.concurrentPerform(iterations: colCount) { j in
+//                var negMean = -columnMeans[j]
+//                transposed[j].withUnsafeMutableBufferPointer { ptr in
+//                    vDSP_vsadd(ptr.baseAddress!, 1, &negMean, ptr.baseAddress!, 1, vDSP_Length(rowCount))
+//                }
+//            }
+//
+//            // Step 4: 转置回来，变回 [row][col]，并发
+//            var normalized = Array(repeating: [Float](repeating: 0, count: colCount), count: rowCount)
+//            DispatchQueue.concurrentPerform(iterations: rowCount) { row in
+//                for col in 0..<colCount {
+//                    normalized[row][col] = transposed[col][row]
+//                }
+//            }
+//
+//            return normalized
+//        } else {
+//            // iOS 14.6 以下的系统
+//            let rowCount = feats.count
+//            let colCount = feats[0].count
+//
+//            // 1. 计算每一列的平均值
+//            var columnMeans = [Float](repeating: 0, count: colCount)
+//            for row in feats {
+//                for j in 0..<colCount {
+//                    columnMeans[j] += row[j]
+//                }
+//            }
+//            for j in 0..<colCount {
+//                columnMeans[j] /= Float(rowCount)
+//            }
+//
+//            // 2. 每个元素减去对应列的均值
+//            var normalized = feats
+//            for i in 0..<rowCount {
+//                for j in 0..<colCount {
+//                    normalized[i][j] -= columnMeans[j]
+//                }
+//            }
+//
+//            return normalized
+//        }
+//    }
     
     func meanNormalize(feats: [[Float]]) -> [[Float]] {
         let rowCount = feats.count
         let colCount = feats[0].count
 
-        // Step 1: 转置 feats 成 [col][row]，便于按列计算（并发）
-        var transposed = Array(repeating: [Float](repeating: 0, count: rowCount), count: colCount)
-        DispatchQueue.concurrentPerform(iterations: colCount) { col in
-            for row in 0..<rowCount {
-                transposed[col][row] = feats[row][col]
-            }
-        }
-
-        // Step 2: 使用 vDSP 并发计算每列的平均值
-        var columnMeans = [Float](repeating: 0, count: colCount)
-        DispatchQueue.concurrentPerform(iterations: colCount) { j in
-            vDSP_meanv(transposed[j], 1, &columnMeans[j], vDSP_Length(rowCount))
-        }
-
-        // Step 3: 每列减去均值（向量加上 -mean），并发
-        DispatchQueue.concurrentPerform(iterations: colCount) { j in
-            var negMean = -columnMeans[j]
-            transposed[j].withUnsafeMutableBufferPointer { ptr in
-                vDSP_vsadd(ptr.baseAddress!, 1, &negMean, ptr.baseAddress!, 1, vDSP_Length(rowCount))
-            }
-        }
-
-        // Step 4: 转置回来，变回 [row][col]，并发
-        var normalized = Array(repeating: [Float](repeating: 0, count: colCount), count: rowCount)
-        DispatchQueue.concurrentPerform(iterations: rowCount) { row in
+        // Step 1: 扁平化转置 feats -> [col][row]
+        var transposedFlat = [Float](repeating: 0, count: rowCount * colCount)
+        for row in 0..<rowCount {
             for col in 0..<colCount {
-                normalized[row][col] = transposed[col][row]
+                transposedFlat[col * rowCount + row] = feats[row][col]
             }
+        }
+
+        // Step 2: 计算每列的均值（并发 + 避免 bounds-check）
+        var columnMeans = [Float](repeating: 0, count: colCount)
+        transposedFlat.withUnsafeMutableBytes { rawBuffer in
+            let transPtr = rawBuffer.baseAddress!.assumingMemoryBound(to: Float.self)
+
+            columnMeans.withUnsafeMutableBytes { meanRaw in
+                let meanPtr = meanRaw.baseAddress!.assumingMemoryBound(to: Float.self)
+
+                DispatchQueue.concurrentPerform(iterations: colCount) { col in
+                    let start = col * rowCount
+                    vDSP_meanv(transPtr.advanced(by: start), 1, meanPtr.advanced(by: col), vDSP_Length(rowCount))
+                }
+            }
+
+            // Step 3: 每列减去均值（并发）
+            columnMeans.withUnsafeBytes { meanRaw in
+                let meanPtr = meanRaw.baseAddress!.assumingMemoryBound(to: Float.self)
+
+                DispatchQueue.concurrentPerform(iterations: colCount) { col in
+                    var negMean = -meanPtr[col]
+                    let start = col * rowCount
+                    vDSP_vsadd(transPtr.advanced(by: start), 1, &negMean, transPtr.advanced(by: start), 1, vDSP_Length(rowCount))
+                }
+            }
+        }
+
+        // Step 4: 扁平化转置回来 -> [row][col]
+        var normalizedFlat = [Float](repeating: 0, count: rowCount * colCount)
+        normalizedFlat.withUnsafeMutableBytes { normRaw in
+            let normPtr = normRaw.baseAddress!.assumingMemoryBound(to: Float.self)
+
+            transposedFlat.withUnsafeBytes { transRaw in
+                let transPtr = transRaw.baseAddress!.assumingMemoryBound(to: Float.self)
+
+                DispatchQueue.concurrentPerform(iterations: rowCount) { row in
+                    for col in 0..<colCount {
+                        normPtr[row * colCount + col] = transPtr[col * rowCount + row]
+                    }
+                }
+            }
+        }
+
+        // Step 5: 拆分成 [[Float]]
+        var normalized = [[Float]]()
+        normalized.reserveCapacity(rowCount)
+        for row in 0..<rowCount {
+            let start = row * colCount
+            let rowSlice = normalizedFlat[start..<start + colCount]
+            normalized.append(Array(rowSlice))
         }
 
         return normalized
