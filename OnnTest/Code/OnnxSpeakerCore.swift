@@ -1,5 +1,5 @@
 //
-//  OnnxSpeaker.swift
+//  OnnxSpeakerCore.swift
 //  OnnTest
 //
 //  Created by xfb on 2025/3/25.
@@ -9,7 +9,7 @@ import Foundation
 import Accelerate
 import NumiOS
 
-class OnnxSpeaker {
+class OnnxSpeakerCore {
     var resampleRate: Int = 16000
     var melBasis: [[Float]] = []
     var window: [[Float]] = []

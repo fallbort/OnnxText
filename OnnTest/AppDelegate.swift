@@ -20,7 +20,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let beginTime = Date().timeIntervalSince1970
         OnnxLogHelper.beginTime = beginTime
         NSLog("time begin \(beginTime)")
-        let speaker = OnnxSpeaker()
+        let speaker = OnnxSpeakerCore()
         if let url = Bundle.main.url(forResource: "test444", withExtension: "wav"),
            let floats = OnnxAudioFileHelper.loadAudioFileWithResampling(url: url,targetSampleRate: 16000) {
             OnnxLogHelper.log("time test 2")
